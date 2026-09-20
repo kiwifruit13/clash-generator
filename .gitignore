@@ -1,0 +1,28 @@
+# ---- Python ----
+__pycache__/
+*.py[oc]
+*.egg-info
+.pytest_cache/
+
+# ---- 构建/打包产物 ----
+build/
+dist/
+release/
+*.spec.bak
+
+# ---- 虚拟环境(单 .venv + uv 管理;.build_venv 为历史遗留,不再纳入) ----
+.venv/
+.build_venv/
+
+# ---- 运行期二进制/geodata(经 geox-url 下载或用户提供,不入库) ----
+*.dat
+mihomo-bin/
+mihomo.zip
+geo/
+
+# ---- 生成的配置输出 ----
+final.yaml
+final_*.yaml
+
+# ---- 测试样本副本(与 code/ 根冗余) ----
+新建文件夹/

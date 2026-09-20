@@ -1,0 +1,23 @@
+[project]
+name = "clash-generator"
+version = "0.1.0"
+description = "Clash/Mihomo 配置生成器:接受用户 proxies 文件,自动补全其余 6 段,生成适配度 > 7.5/10 的完整 YAML"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyside6~=6.6.0",
+    "pyyaml~=6.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller~=6.3.0",
+    # D9: 约定用单一 venv + uv 管理依赖(uv.lock 锁定版本)。
+    # 避免再次引入 .build_venv 等第二 venv,防止"开发能跑、打包崩"的版本漂移。
+    "pytest>=9.1.1",
+]
+
+# 国内 PyPI 镜像(优先使用,加速依赖安装)
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
