@@ -37,6 +37,13 @@ _INTERVAL = 86400  # 24 小时(RP-6)
 # 可被 prefs 开关控制的规则集
 _OPTIONAL_SETS = {"apple", "icloud", "google"}
 
+# B: fakeipfilter 源(qichiyuhub/rule,text,行为域)。
+# 这些集合承担"必须真实 IP"语义,必须与 dns 的 fake-ip-filter + nameserver-policy 成对注入。
+_FAKEIPFILTER_SETS: list[tuple[str, str]] = [
+    ("fakeipfilter_cn", "https://raw.githubusercontent.com/qichiyuhub/rule/refs/heads/main/rules/fakeipfilter-cn.list"),
+    ("fakeipfilter_!cn", "https://raw.githubusercontent.com/qichiyuhub/rule/refs/heads/main/rules/fakeipfilter-!cn.list"),
+]
+
 
 def build(prefs: Prefs) -> dict:
     """生成 rule-providers 段。
@@ -99,4 +106,18 @@ def build(prefs: Prefs) -> dict:
             # 不允许与内置规则集重名(防覆盖)
             if name not in providers:
                 providers[name] = defaults
+
+    # B: 注入 fakeipfilter 源(opt-in,text)。若与自定义重名则保留自定义(防覆盖)
+    if prefs.enable_fakeip_filter:
+        for name, url in _FAKEIPFILTER_SETS:
+            if name not in providers:
+                providers[name] = {
+                    "type": "http",
+                    "behavior": "domain",  # 域行为
+                    "format": "text",      # 保持 text,不引入 mrs
+                    "url": url,
+                    "path": f"./ruleset/{name}.txt",
+                    "interval": _INTERVAL,
+                }
+
     return providers

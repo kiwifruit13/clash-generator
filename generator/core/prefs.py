@@ -49,6 +49,7 @@ class Prefs:
     VALID_RULE_TEMPLATES: ClassVar[set[str]] = {"standard", "minimal"}  # fine 为假选项,已移除(D8)
     VALID_RULESET_SOURCES: ClassVar[set[str]] = {"loyalsoldier"}
     VALID_CLIENTS: ClassVar[set[str]] = {"pc", "router", "mobile"}
+    VALID_DNS_CACHE_ALGORITHMS: ClassVar[set[str]] = {"arc", "lru"}
 
     # === 元控制 ===
     advanced_mode: bool = False  # False=智能模式(全默认) True=进阶模式(用户可改)
@@ -61,9 +62,20 @@ class Prefs:
     secret: str = ""
     ipv6: str = "auto"  # auto(依节点画像)/true/false
 
-    # === 2. DNS(3,原4项但 fake-ip-filter-mode 已固定不开放)===
+    # === 2. DNS(3 + 5 新增 000.txt 适配 = 8,原 fake-ip-filter-mode 已固定不开放)===
     enhanced_mode: str = "fake-ip"  # fake-ip/redir-host
     respect_rules: bool = True
+    # 000.txt 适配新增(默认=智能模式基线):
+    dns_cache_algorithm: str = "arc"  # arc/lru(000.txt: cache-algorithm)
+    fake_ip_ttl: int = 1  # 秒,短 TTL 提新鲜度(000.txt: fake-ip-ttl)
+    dns_ecs: bool = True  # 海外默认 DoH 追加 ecs,CDN 就近(000.txt: ecs=)
+    dns_disable_qtype_65: bool = True  # 国内 DoH 关闭 HTTPS/SVCB 查询提速(000.txt)
+    dns_use_fallback_filter: bool = True  # 加入 fallback + geoip 污染回退(000.txt)
+    # P1(独立规格,默认关):境外 DNS 走代理的标签(空=关闭;填策略组名如"默认代理")
+    dns_proxy_tag: str = ""
+    # B(独立规格,默认关):启用 fakeipfilter 源(cn/!cn)并成对注入
+    # fake-ip-filter + nameserver-policy。text 格式,不碰 mrs/单一源不变式。
+    enable_fakeip_filter: bool = False
     # DNS 服务器列表不开放修改(口径统一是核心保证,用户改易破坏适配)
 
     # === 3. 代理组(5,含 333 测试新增分组策略)===
@@ -76,6 +88,8 @@ class Prefs:
     # === 4. 规则(2,含 333 测试新增规则模板)===
     rule_template: str = "standard"  # standard/minimal/fine(333 测试新增)
     custom_rules: list[str] = field(default_factory=list)  # 自定义规则行
+    # P2(独立规格,默认关):AND() 拦截海外 UDP 443(QUIC),逼浏览器回退 TCP
+    enable_quic_reject: bool = False
 
     # === 5. 规则集(4)===
     ruleset_source: str = "loyalsoldier"  # 仅 loyalsoldier(已收敛,见 BUG-02 修复)
@@ -131,6 +145,17 @@ class Prefs:
             errors.append(
                 f"ruleset_source 无效: '{self.ruleset_source}', 允许: {sorted(self.VALID_RULESET_SOURCES)}"
             )
+
+        # dns_cache_algorithm
+        if self.dns_cache_algorithm not in self.VALID_DNS_CACHE_ALGORITHMS:
+            errors.append(
+                f"dns_cache_algorithm 无效: '{self.dns_cache_algorithm}', "
+                f"允许: {sorted(self.VALID_DNS_CACHE_ALGORITHMS)}"
+            )
+
+        # fake_ip_ttl
+        if self.fake_ip_ttl <= 0:
+            errors.append(f"fake_ip_ttl 无效: {self.fake_ip_ttl}, 必须 > 0")
 
         # client
         if self.client not in self.VALID_CLIENTS:

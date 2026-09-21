@@ -43,6 +43,12 @@ def test_smart_defaults():
     assert p.ruleset_source == "loyalsoldier"
     assert p.tun_enable is False
     assert p.enable_apple is True
+    # 000.txt 适配默认值
+    assert p.dns_cache_algorithm == "arc"
+    assert p.fake_ip_ttl == 1
+    assert p.dns_ecs is True
+    assert p.dns_disable_qtype_65 is True
+    assert p.dns_use_fallback_filter is True
     print("  所有默认值符合预期")
     print()
 
@@ -62,6 +68,12 @@ def test_builders_with_smart_prefs():
     assert d["enhanced-mode"] == "fake-ip"
     assert d["respect-rules"] is True
     assert "fake-ip-filter" in d  # fake-ip 模式应有 filter
+    # 000.txt 适配:dns 段默认输出
+    assert d["cache-algorithm"] == "arc"
+    assert d["fake-ip-ttl"] == 1
+    assert "fallback" in d and "fallback-filter" in d
+    assert all("#disable-qtype-65=true" in u for u in d["direct-nameserver"])
+    assert any("ecs=" in u for u in d["nameserver"])
     assert s["enable"] is True
     assert len(pr) == 7  # 7 个规则集
     assert len(r) > 15  # 标准模板规则数
@@ -84,6 +96,94 @@ def test_redir_host_mode():
     assert "fake-ip-filter-mode" not in d
     print(f"  dns: mode={d['enhanced-mode']}, has_filter={'fake-ip-filter' in d}")
     print("  redir-host 模式正确跳过 fake-ip-filter")
+    print()
+
+
+def test_000_dns_toggles():
+    """5b. 000.txt 适配:dns 可调项开关(关掉时不带对应参数)"""
+    print("=== 5b. 000.txt dns 可调项 ===")
+    p_off = Prefs(
+        advanced_mode=True,
+        dns_cache_algorithm="lru",
+        dns_ecs=False,
+        dns_disable_qtype_65=False,
+        dns_use_fallback_filter=False,
+    )
+    d = dns.build(p_off)
+    assert d["cache-algorithm"] == "lru"
+    assert "fake-ip-ttl" in d and d["fake-ip-ttl"] == 1
+    assert "fallback" not in d and "fallback-filter" not in d
+    assert all("#disable-qtype-65=true" not in u for u in d["direct-nameserver"])
+    assert all("ecs=" not in u for u in d["nameserver"])
+    print("  关闭后 disable-qtype-65/ecs/fallback 均正确省略")
+
+    p_err = None
+    try:
+        Prefs(dns_cache_algorithm="bogus")
+    except ValueError as e:
+        p_err = e
+    assert p_err is not None, "非法 dns_cache_algorithm 应抛 ValueError"
+    assert "dns_cache_algorithm" in str(p_err)
+    print("  非法 dns_cache_algorithm 抛 ValueError")
+    print()
+
+
+def test_p1_dns_proxy_tag():
+    """P1: #默认代理 标签(默认空=不生成;设置后打到 nameserver/fallback)"""
+    print("=== P1. dns 代理标签 ===")
+    p_default = Prefs.smart()
+    d = dns.build(p_default)
+    assert all("#" not in u for u in d["nameserver"])
+    assert all("#" not in u for u in d["fallback"])
+
+    p_tag = Prefs(advanced_mode=True, dns_proxy_tag="默认代理")
+    d = dns.build(p_tag)
+    assert all(u.endswith("#默认代理") for u in d["nameserver"])
+    assert all(u.endswith("#默认代理") for u in d["fallback"])
+    print("  默认不生成;设置后 nameserver/fallback 均带 #默认代理")
+    print()
+
+
+def test_p2_quic_reject_rule():
+    """P2: AND() QUIC 拦截(默认关;开启后插在 reject 之后,R-5 不回归)"""
+    print("=== P2. AND() QUIC 拦截 ===")
+    p_off = Prefs.smart()
+    r_off = rules.build(set(), p_off)
+    assert not any(x.startswith("AND,") for x in r_off)
+
+    p_on = Prefs(advanced_mode=True, enable_quic_reject=True)
+    r_on = rules.build(set(), p_on)
+    and_rules = [x for x in r_on if x.startswith("AND,")]
+    assert len(and_rules) == 1, and_rules
+    assert "REJECT" in and_rules[0]
+    # R-5: reject 仍为第一条(AND 插在其后)
+    assert r_on[0].startswith("RULE-SET,reject,")
+    assert r_on[1].startswith("AND,")
+    print("  开启后 AND 规则位于 reject 之后;关闭时无 AND 规则")
+    print()
+
+
+def test_b_fakeip_filter_pairing():
+    """B: fakeipfilter 源(默认关;开启后单点成对注入 fake-ip-filter + nameserver-policy)"""
+    print("=== B. fakeipfilter 成对注入 ===")
+    p_off = Prefs.smart()
+    pr_off = providers.build(p_off)
+    assert "fakeipfilter_cn" not in pr_off
+    assert "fakeipfilter_!cn" not in pr_off
+
+    p_on = Prefs(advanced_mode=True, enable_fakeip_filter=True)
+    pr_on = providers.build(p_on)
+    assert "fakeipfilter_cn" in pr_on and pr_on["fakeipfilter_cn"]["format"] == "text"
+    assert "fakeipfilter_!cn" in pr_on
+
+    d = dns.build(p_on)  # fake-ip 模式
+    fif = d.get("fake-ip-filter", [])
+    assert any("fakeipfilter_cn" in e for e in fif)
+    assert any("fakeipfilter_!cn" in e for e in fif)
+    pol = d.get("nameserver-policy", {})
+    assert "rule-set:fakeipfilter_cn" in pol
+    assert "rule-set:fakeipfilter_!cn" in pol
+    print("  开启后 providers 有 2 集,且同进 fake-ip-filter + nameserver-policy")
     print()
 
 
@@ -182,6 +282,10 @@ if __name__ == "__main__":
     test_smart_defaults()
     test_builders_with_smart_prefs()
     test_redir_host_mode()
+    test_000_dns_toggles()
+    test_p1_dns_proxy_tag()
+    test_p2_quic_reject_rule()
+    test_b_fakeip_filter_pairing()
     test_minimal_rule_template()
     test_disable_rulesets()
     test_full_assemble_smart()
