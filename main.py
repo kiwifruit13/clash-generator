@@ -15,7 +15,7 @@ import runpy
 import sys
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 
 
 def main() -> int:

@@ -1,6 +1,6 @@
 [project]
 name = "clash-generator"
-version = "0.1.0"
+version = "1.1.0"
 description = "Clash/Mihomo 配置生成器:接受用户 proxies 文件,自动补全其余 6 段,生成适配度 > 7.5/10 的完整 YAML"
 readme = "README.md"
 requires-python = ">=3.10"
