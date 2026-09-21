@@ -114,6 +114,15 @@ def build(
     # === 1. 拦截(R-5: reject 必须最前)===
     rules.append("RULE-SET,reject,REJECT")
 
+    # P2(独立规格,默认关):AND() 拦截海外 UDP 443(QUIC)。
+    # 掐断 UDP 443 后浏览器秒级回退 TCP(HTTP/2/1.1),避开代理隧道 UDP-over-TCP
+    # 双层重传导致的卡顿。官方标准形式用「取非国内」,依赖本项目已用的 GEOSITE,cn,
+    # 零新增规则集。
+    if prefs.enable_quic_reject:
+        rules.append(
+            "AND,(AND,(DST-PORT,443),(NETWORK,UDP)),(NOT,((GEOSITE,cn))),REJECT"
+        )
+
     # === 2. 私有网络 ===
     rules.append("RULE-SET,private,DIRECT")
     # R-3: IP-CIDR 必带 no-resolve

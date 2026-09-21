@@ -15,11 +15,18 @@ from pathlib import Path
 import yaml
 
 from .cleaner import clean
+from .checker import (
+    BUILT_IN,
+    MUST_REAL_IP_SETS,
+    extract_dns_proxy_tags,
+    extract_ruleset_refs,
+    parse_rule,
+)
 from .prefs import Prefs
 from .builders import basic, dns, groups, providers, rules, sniffer
 
 # 内置策略(PG-2/R-4 检查时排除)
-BUILT_IN = {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}
+# BUILT_IN 已从 checker 导入,避免重复定义
 
 
 def _check_cross_section_consistency(
@@ -39,20 +46,18 @@ def _check_cross_section_consistency(
     group_names = {g["name"] for g in groups_list}
     provider_names = set(providers_cfg.keys())
 
-    # rules 出口必须在 groups 或内置策略中
+    # rules 出口必须在 groups 或内置策略中(P2:parse_rule 兼容 AND() 逻辑规则)
     for rule in rules_list:
-        parts = rule.split(",")
-        if len(parts) >= 3:
-            outlet = parts[2].strip()
-            if outlet not in BUILT_IN and outlet not in group_names:
-                errors.append(f"rules 出口 '{outlet}' 未在 proxy-groups 定义:{rule}")
+        _, _, outlet = parse_rule(rule)
+        if outlet and outlet not in BUILT_IN and outlet not in group_names:
+            errors.append(f"rules 出口 '{outlet}' 未在 proxy-groups 定义:{rule}")
 
-    # rules 的 RULE-SET 引用必须在 providers 中定义
+    # rules 的 RULE-SET 引用必须在 providers 中定义(含逻辑规则内部引用)
     for rule in rules_list:
-        if rule.startswith("RULE-SET,"):
-            parts = rule.split(",")
-            if len(parts) >= 2 and parts[1] not in provider_names:
-                errors.append(f"rules 引用 RULE-SET,{parts[1]} 未在 rule-providers 定义")
+        _, refs, _ = parse_rule(rule)
+        for name in refs:
+            if name not in provider_names:
+                errors.append(f"rules 引用 RULE-SET,{name} 未在 rule-providers 定义")
 
     # proxy-groups 引用的节点/组必须存在
     for g in groups_list:
@@ -68,6 +73,24 @@ def _check_cross_section_consistency(
                 s = s.strip()
                 if s not in provider_names:
                     errors.append(f"nameserver-policy 引用 rule-set:{s} 未在 rule-providers 定义")
+
+    # P1: dns nameserver/fallback 的代理标签(#TAG)必须在 groups 或内置策略中
+    for tag in extract_dns_proxy_tags(
+        dns_cfg.get("nameserver"),
+        dns_cfg.get("fallback"),
+    ):
+        if tag not in group_names and tag not in BUILT_IN:
+            errors.append(f"dns nameserver/fallback 代理标签 '#{tag}' 未在 proxy-groups 定义")
+
+    # A: fakeipfilter(必须真实 IP)规则集须与 fake-ip-filter 成对维护
+    if dns_cfg.get("enhanced-mode") == "fake-ip":
+        policy_sets = extract_ruleset_refs(list(dns_cfg.get("nameserver-policy", {})))
+        filter_sets = extract_ruleset_refs(dns_cfg.get("fake-ip-filter"))
+        for name in MUST_REAL_IP_SETS & policy_sets:
+            if name not in filter_sets:
+                errors.append(
+                    f"nameserver-policy 引用 rule-set:{name} 但 fake-ip-filter 未包含(DNS 分流失效)"
+                )
 
     return errors
 

@@ -173,8 +173,28 @@ class PrefsPanel(QWidget):
             "不建议与 prefer-h3 同用"
         )
 
+        # P1: 境外 DNS 代理标签
+        self.edit_proxy_tag = QLineEdit()
+        self.edit_proxy_tag.setPlaceholderText("留空=关闭")
+        self.edit_proxy_tag.setToolTip(
+            "P1(000.txt 适配):境外 DNS 解析走代理的标签\n"
+            "填策略组名(如「默认代理」)则海外 DoH 追加 #<组名>,防污染\n"
+            "🔴 指向不存在的组会被 D-9 红线拦截"
+        )
+
+        # B: fakeipfilter 源(成对注入)
+        self.cb_fakeip_filter = QCheckBox("fakeipfilter 源(成对注入 fake-ip-filter 与 DNS 策略)")
+        self.cb_fakeip_filter.setChecked(False)
+        self.cb_fakeip_filter.setToolTip(
+            "B(000.txt 适配):启用 qichiyuhub fakeipfilter_cn/!cn 规则集\n"
+            "单点声明同时注入 fake-ip-filter 与 nameserver-policy\n"
+            "🔴 只改一半会被 D-10 红线拦截,避免 DNS 分流失效"
+        )
+
         form.addRow("enhanced-mode:", self.cb_enhanced)
         form.addRow("", self.cb_respect_rules)
+        form.addRow("境外 DNS 代理标签:", self.edit_proxy_tag)
+        form.addRow("", self.cb_fakeip_filter)
         parent_layout.addWidget(grp)
 
     def _build_groups_group(self, parent_layout: QVBoxLayout) -> None:
@@ -228,7 +248,17 @@ class PrefsPanel(QWidget):
             "原 fine 为未实现假选项,已移除(D8)"
         )
 
+        # P2: AND() QUIC 拦截
+        self.cb_quic_reject = QCheckBox("AND() QUIC 拦截(海外 UDP 443 → 回退 TCP)")
+        self.cb_quic_reject.setChecked(False)
+        self.cb_quic_reject.setToolTip(
+            "P2(000.txt 适配):掐断海外 UDP 443(QUIC),逼浏览器回退 TCP(HTTP/2)\n"
+            "避开代理隧道 UDP-over-TCP 双层重传导致的视频卡顿\n"
+            "需要较新的 mihomo 内核支持逻辑规则;默认关闭"
+        )
+
         form.addRow("规则模板:", self.cb_template)
+        form.addRow("", self.cb_quic_reject)
         parent_layout.addWidget(grp)
 
     def _build_providers_group(self, parent_layout: QVBoxLayout) -> None:
@@ -361,11 +391,16 @@ class PrefsPanel(QWidget):
             ipv6=self.cb_ipv6.currentText(),
             enhanced_mode=self.cb_enhanced.currentText(),
             respect_rules=self.cb_respect_rules.isChecked(),
+            # P1/B: 000.txt 独立规格新增(DNS)
+            dns_proxy_tag=self.edit_proxy_tag.text().strip(),
+            enable_fakeip_filter=self.cb_fakeip_filter.isChecked(),
             url_test_interval=self.sb_interval.value(),
             url_test_tolerance=self.sb_tolerance.value(),
             fallback_outlet=self.cb_outlet.currentText(),
             grouping_strategy=self.cb_grouping.currentText(),
             rule_template=self.cb_template.currentText(),
+            # P2: 000.txt 独立规格新增(规则)
+            enable_quic_reject=self.cb_quic_reject.isChecked(),
             ruleset_source=self.cb_source.currentText(),
             enable_apple=self.cb_apple.isChecked(),
             enable_icloud=self.cb_icloud.isChecked(),

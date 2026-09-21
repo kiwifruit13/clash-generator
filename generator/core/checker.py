@@ -8,10 +8,100 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # 内置策略(R-4 检查时排除)
 BUILT_IN = {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}
+
+# A: 必须真实 IP 的规则集(fakeipfilter)。此类集合一旦出现在 nameserver-policy,
+# 就必须在 fake-ip-filter 成对出现,否则内核下发假 IP、DNS 分流失效。
+MUST_REAL_IP_SETS: set[str] = {"fakeipfilter_cn", "fakeipfilter_!cn"}
+
+
+def extract_ruleset_refs(entries) -> set[str]:
+    """从 fake-ip-filter 条目 / nameserver-policy key 提取 `rule-set:<name>` 集合名。
+
+    兼容形如 "rule-set:private" 与 "rule-set:cn_domain,private_domain" 两种写法。
+
+    Args:
+        entries: 字符串可迭代,如 dns.fake-ip-filter 列表
+
+    Returns:
+        set[str]: 引用的规则集名
+    """
+    out: set[str] = set()
+    prefix = "rule-set:"
+    for e in entries or []:
+        s = str(e)
+        if s.lower().startswith(prefix):
+            names = s[len(prefix):].split(",")
+            out.update(n.strip() for n in names if n.strip())
+    return out
+
+
+def parse_rule(rule: str) -> tuple[str, list[str], str]:
+    """解析一条规则 → (kind, ruleset_refs, outlet)。
+
+    P2:为逻辑规则(AND/OR/NOT,含嵌套括号)提供正确解析,避免朴素 split(",")
+    把 `AND,((RULE-SET,...` 错拆(如 parts[1]==`((RULE-SET`)。
+
+    Args:
+        rule: 单条规则字符串,如 "RULE-SET,private,DIRECT" / "MATCH,DIRECT" /
+            "AND,(AND,(DST-PORT,443),(NETWORK,UDP)),(NOT,((GEOSITE,cn))),REJECT"
+
+    Returns:
+        (kind, ruleset_refs, outlet):
+            kind: "RULE-SET" / "LOGICAL" / "OTHER"
+            ruleset_refs: 规则内所有 `RULE-SET,<name>` 引用名(R-2 校验用)
+            outlet: 出站目标(R-4 校验用)。RULE-SET 取第 3 段,逻辑/其它取整体末段
+    """
+    stripped = rule.strip()
+    if stripped.startswith(("AND,", "OR,", "NOT,")):
+        kind = "LOGICAL"
+    elif stripped.startswith("RULE-SET,"):
+        kind = "RULE-SET"
+    else:
+        kind = "OTHER"
+
+    refs = re.findall(r"RULE-SET,\s*([^,) \t]+)", rule)
+    parts = [p.strip() for p in rule.split(",")]
+    if kind == "LOGICAL":
+        # 逻辑规则:出口在末尾(条件被括号包裹,末段为动作)如 ...))))
+        outlet = parts[-1] if parts else ""
+    elif len(parts) >= 3:
+        # 普通规则:出口为第 3 段(如 IP-CIDR,x,DIRECT,no-resolve → DIRECT)
+        outlet = parts[2]
+    else:
+        # 非逻辑且不足 3 段(如 DOMAIN,x / MATCH,x / 裸 RULE-SET,x)无显式出口 → 不校验
+        # (还原旧语义,避免把集合名/域名误当出口造成 R-4 误报)
+        outlet = ""
+    return kind, refs, outlet
+
+
+def extract_dns_proxy_tags(*nameserver_lists) -> set[str]:
+    """从 dns nameserver/fallback 条目提取代理解析标签。
+
+    标签位于 '#' 与首个 '&' 之间(形如 `https://8.8.8.8/dns-query&ecs=...#默认代理`)。
+    P1:校验这些标签都指向存在的策略组/内置策略,避免"标签过期→解析器被静默丢弃"。
+
+    Args:
+        *nameserver_lists: 若干 URL 列表(dns.nameserver / dns.fallback 等)
+
+    Returns:
+        set[str]: 出现过的标签集合(无标签则空集)
+    """
+    tags: set[str] = set()
+    for lst in nameserver_lists:
+        for entry in lst or []:
+            s = str(entry)
+            if "#" not in s:
+                continue
+            after = s[s.index("#") + 1:]
+            tag = after.split("&", 1)[0].strip()
+            if tag:
+                tags.add(tag)
+    return tags
 
 
 @dataclass
@@ -168,6 +258,39 @@ def check(config: dict) -> Report:
                         "补充对应的 rule-provider 或移除引用",
                     ))
 
+    # D-9: nameserver/fallback 的代理标签(#TAG)必须指向存在的策略组/内置策略
+    proxy_tags = extract_dns_proxy_tags(
+        dns_cfg.get("nameserver"),
+        dns_cfg.get("fallback"),
+    )
+    for tag in proxy_tags:
+        if tag not in group_names and tag not in BUILT_IN:
+            report.items.append(CheckItem(
+                "D-9", "🔴",
+                f"dns nameserver/fallback 代理标签 '#{tag}' 未在 proxy-groups/内置策略定义",
+                "指向存在的策略组,或移除该标签",
+            ))
+
+    # D-10: fakeipfilter(必须真实 IP)规则集须与 fake-ip-filter 成对维护
+    # A 方案:防止只改 nameserver-policy 却漏了 fake-ip-filter,导致假 IP 直接下发、分流失效。
+    if dns_cfg.get("enhanced-mode") == "fake-ip":
+        policy_sets: set[str] = set()
+        for key in dns_cfg.get("nameserver-policy", {}):
+            if key.startswith("rule-set:"):
+                for s in key.split(":", 1)[1].split(","):
+                    s = s.strip()
+                    if s:
+                        policy_sets.add(s)
+        filter_sets = extract_ruleset_refs(dns_cfg.get("fake-ip-filter"))
+        for name in MUST_REAL_IP_SETS & policy_sets:
+            if name not in filter_sets:
+                report.items.append(CheckItem(
+                    "D-10", "🔴",
+                    f"nameserver-policy 引用 rule-set:{name} 但 fake-ip-filter 未包含,"
+                    "假 IP 直接下发导致 DNS 分流失效",
+                    f"在 fake-ip-filter 同位置加入 rule-set:{name}(成对维护)",
+                ))
+
     # === S 段:Sniffer 红线 ===
 
     # S-1: sniff 协议仅 HTTP/TLS/QUIC
@@ -275,14 +398,14 @@ def check(config: dict) -> Report:
             "R-1", "🔴", "MATCH 必须在最后", "调整规则顺序"
         ))
 
-    # R-2: RULE-SET 引用必须在 providers 中定义
+    # R-2: RULE-SET 引用必须在 providers 中定义(含逻辑规则内部引用)
     for rule in rules_list:
-        if rule.startswith("RULE-SET,"):
-            parts = rule.split(",")
-            if len(parts) >= 2 and parts[1] not in provider_names:
+        _, refs, _ = parse_rule(rule)
+        for name in refs:
+            if name not in provider_names:
                 report.items.append(CheckItem(
                     "R-2", "🔴",
-                    f"RULE-SET,{parts[1]} 未在 rule-providers 定义",
+                    f"RULE-SET,{name} 未在 rule-providers 定义",
                     "补充对应的 rule-provider",
                 ))
 
@@ -294,15 +417,15 @@ def check(config: dict) -> Report:
                     "R-3", "🔴", f"IP 类规则缺 no-resolve:{rule}", "添加 no-resolve"
                 ))
 
-    # R-4: 规则出口必须存在
+    # R-4: 规则出口必须存在(P2:逻辑规则取整体末段,兼容 AND() 的 REJECT)
     for rule in rules_list:
-        parts = rule.split(",")
-        if len(parts) >= 3:
-            outlet = parts[2].strip()
-            if outlet not in BUILT_IN and outlet not in group_names:
-                report.items.append(CheckItem(
-                    "R-4", "🔴", f"规则出口 '{outlet}' 不存在:{rule}", "检查组名"
-                ))
+        _, _, outlet = parse_rule(rule)
+        if not outlet:
+            continue
+        if outlet not in BUILT_IN and outlet not in group_names:
+            report.items.append(CheckItem(
+                "R-4", "🔴", f"规则出口 '{outlet}' 不存在:{rule}", "检查组名"
+            ))
 
     # R-5: reject 最前
     if rules_list and not rules_list[0].startswith("RULE-SET,reject"):
